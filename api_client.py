@@ -393,3 +393,84 @@ def generate_video_kling(image_url: str, prompt: str, duration: str = "5") -> st
         }
     )
     return result["video"]["url"]
+
+
+def load_kie_api_key() -> str:
+    """Load KIE API key from config file."""
+    key_path = Path.home() / ".clawdbot" / "kie_api_key.txt"
+    if key_path.exists():
+        return key_path.read_text().strip()
+    if os.environ.get('KIE_API_KEY'):
+        return os.environ['KIE_API_KEY']
+    raise FileNotFoundError("KIE API key not found")
+
+
+def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") -> str:
+    """
+    Generate video using VEO 3.1 Fast via KIE API (kie.ai).
+    
+    This is Drake's preferred provider for Shot Generator - 25% of Google's pricing.
+    
+    Args:
+        image_url: Source image URL (must be publicly accessible)
+        prompt: Motion/camera prompt describing how to animate the image
+        aspect_ratio: "9:16" (portrait) or "16:9" (landscape)
+    
+    Returns:
+        Video URL
+    """
+    import time
+    
+    kie_key = load_kie_api_key()
+    headers = {
+        "Authorization": f"Bearer {kie_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # Submit generation job
+    submit_url = "https://api.kie.ai/api/v1/veo/generate"
+    payload = {
+        "prompt": prompt,
+        "imageUrls": [image_url],
+        "model": "veo3_fast",
+        "generationType": "FIRST_AND_LAST_FRAMES_2_VIDEO",
+        "aspect_ratio": aspect_ratio
+    }
+    
+    resp = requests.post(submit_url, json=payload, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    
+    if data.get("code") != 200:
+        raise Exception(f"KIE API error: {data.get('msg', 'Unknown error')}")
+    
+    task_id = data["data"]["taskId"]
+    
+    # Poll for completion
+    detail_url = f"https://api.kie.ai/api/v1/veo/detail?taskId={task_id}"
+    max_attempts = 120  # 10 minutes max (5s intervals)
+    
+    for attempt in range(max_attempts):
+        time.sleep(5)  # Wait 5 seconds between polls
+        
+        poll_resp = requests.get(detail_url, headers=headers)
+        poll_resp.raise_for_status()
+        poll_data = poll_resp.json()
+        
+        if poll_data.get("code") != 200:
+            continue  # Might be transient, keep polling
+        
+        success_flag = poll_data["data"].get("successFlag", 0)
+        
+        if success_flag == 1:  # Success
+            video_url = poll_data["data"]["response"].get("videoUrl")
+            if video_url:
+                return video_url
+            raise Exception("KIE: No video URL in successful response")
+        elif success_flag == 2:  # Failed
+            raise Exception("KIE: Task failed before completion")
+        elif success_flag == 3:  # Generation failed
+            raise Exception("KIE: Video generation failed upstream")
+        # successFlag == 0 means still generating, continue polling
+    
+    raise Exception("KIE: Timeout waiting for video generation")
