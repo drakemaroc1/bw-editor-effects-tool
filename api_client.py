@@ -546,8 +546,8 @@ def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") 
     task_id = data["data"]["taskId"]
     print(f"[KIE] Task submitted: {task_id}")
     
-    # Poll for completion
-    detail_url = f"https://api.kie.ai/api/v1/veo/detail?taskId={task_id}"
+    # Poll for completion (endpoint from docs: record-info, NOT detail)
+    detail_url = f"https://api.kie.ai/api/v1/veo/record-info?taskId={task_id}"
     max_attempts = 120  # 10 minutes max (5s intervals)
     
     # Initial delay to let task register
