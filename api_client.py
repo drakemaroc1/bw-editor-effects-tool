@@ -416,16 +416,30 @@ def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
     from io import BytesIO
     import tempfile
     
+    print(f"[KIE Compress] Input URL type: {'data URL' if image_url.startswith('data:') else 'HTTP'}")
+    print(f"[KIE Compress] URL length: {len(image_url)}")
+    
     # Handle both data URLs and http URLs
     if image_url.startswith('data:'):
         # Base64 data URL - decode it
-        header, encoded = image_url.split(',', 1)
-        original_data = base64.b64decode(encoded)
+        try:
+            header, encoded = image_url.split(',', 1)
+            original_data = base64.b64decode(encoded)
+            print(f"[KIE Compress] Decoded base64: {len(original_data)} bytes")
+        except Exception as e:
+            print(f"[KIE Compress] ERROR decoding base64: {e}")
+            raise
     else:
         # HTTP URL - download it
-        resp = requests.get(image_url)
-        resp.raise_for_status()
-        original_data = resp.content
+        print(f"[KIE Compress] Downloading from: {image_url[:100]}...")
+        try:
+            resp = requests.get(image_url, timeout=30)
+            resp.raise_for_status()
+            original_data = resp.content
+            print(f"[KIE Compress] Downloaded: {len(original_data)} bytes")
+        except Exception as e:
+            print(f"[KIE Compress] ERROR downloading: {e}")
+            raise
     
     max_bytes = max_size_kb * 1024
     
@@ -471,13 +485,16 @@ def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
         compressed_data = buffer.read()
     
     # Upload to fal.ai to get a real HTTP URL (not data URL)
+    print(f"[KIE Compress] Compressed to {len(compressed_data)} bytes ({len(compressed_data)/1024:.1f}KB)")
     ensure_fal_key()
     with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
         f.write(compressed_data)
         temp_path = f.name
     
     try:
+        print(f"[KIE Compress] Uploading to fal.ai...")
         http_url = fal_client.upload_file(temp_path)
+        print(f"[KIE Compress] Got HTTP URL: {http_url[:80]}...")
     finally:
         os.unlink(temp_path)
     
@@ -527,15 +544,26 @@ def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") 
         raise Exception(f"KIE API error: {data.get('msg', 'Unknown error')}")
     
     task_id = data["data"]["taskId"]
+    print(f"[KIE] Task submitted: {task_id}")
     
     # Poll for completion
     detail_url = f"https://api.kie.ai/api/v1/veo/detail?taskId={task_id}"
     max_attempts = 120  # 10 minutes max (5s intervals)
     
+    # Initial delay to let task register
+    time.sleep(10)
+    
     for attempt in range(max_attempts):
-        time.sleep(5)  # Wait 5 seconds between polls
+        print(f"[KIE] Polling attempt {attempt + 1}...")
         
         poll_resp = requests.get(detail_url, headers=headers)
+        
+        # Handle 404 gracefully (task might not be registered yet)
+        if poll_resp.status_code == 404:
+            print(f"[KIE] Got 404 - task not ready yet, waiting...")
+            time.sleep(5)
+            continue
+        
         poll_resp.raise_for_status()
         poll_data = poll_resp.json()
         
