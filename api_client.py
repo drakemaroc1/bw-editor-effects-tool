@@ -405,6 +405,53 @@ def load_kie_api_key() -> str:
     raise FileNotFoundError("KIE API key not found")
 
 
+def compress_image_for_kie(image_url: str, max_size_mb: float = 4.0) -> str:
+    """
+    Download, compress, and re-upload image to meet KIE API size limits.
+    KIE has strict image size limits - compress to ~4MB max.
+    
+    Returns new URL of compressed image.
+    """
+    from PIL import Image
+    from io import BytesIO
+    
+    # Download original image
+    resp = requests.get(image_url)
+    resp.raise_for_status()
+    original_data = resp.content
+    
+    # If already small enough, return original
+    if len(original_data) < max_size_mb * 1024 * 1024:
+        return image_url
+    
+    # Open and resize
+    img = Image.open(BytesIO(original_data))
+    
+    # Resize to max 1280px on longest side (keeps quality while reducing size)
+    max_dim = 1280
+    if max(img.size) > max_dim:
+        ratio = max_dim / max(img.size)
+        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+    
+    # Convert to RGB if needed (for JPEG)
+    if img.mode in ('RGBA', 'P'):
+        img = img.convert('RGB')
+    
+    # Compress with decreasing quality until under size limit
+    for quality in [85, 70, 55, 40]:
+        buffer = BytesIO()
+        img.save(buffer, format='JPEG', quality=quality, optimize=True)
+        if buffer.tell() < max_size_mb * 1024 * 1024:
+            break
+    
+    buffer.seek(0)
+    compressed_data = buffer.read()
+    
+    # Re-upload via fal.ai
+    return upload_image(compressed_data, "compressed.jpg")
+
+
 def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") -> str:
     """
     Generate video using VEO 3.1 Fast via KIE API (kie.ai).
@@ -420,6 +467,9 @@ def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") 
         Video URL
     """
     import time
+    
+    # Compress image if needed (KIE has size limits)
+    image_url = compress_image_for_kie(image_url)
     
     kie_key = load_kie_api_key()
     headers = {
