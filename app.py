@@ -26,8 +26,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# Available effects
-EFFECTS = ["VEO Cam", "Float", "Day to Night", "Staging Inside", "Staging Outside", "Reno", "3D Price", "3D City", "3D Beds"]
+# Available effects ("None" = no processing, just download original)
+EFFECTS = ["None", "VEO Cam", "Float", "Day to Night", "Staging Inside", "Staging Outside", "Reno", "3D Price", "3D City", "3D Beds"]
 
 def get_effect_key(effect_name):
     return effect_name.lower().replace(" ", "_")

@@ -329,7 +329,7 @@ def generate_video(first_frame_url: str, last_frame_url: str, prompt: str, durat
 # Video prompts for each effect
 EFFECT_PROMPTS = {
     "veo_cam": "Slow, smooth camera move forward, professional real estate video.",
-    "float": "Make all furniture float and levitate high in the air, suspended magically above the floor. Camera fly forward and orbit at end.",
+    "float": "All furniture gently bobs and floats in the air with smooth, constant movement. Slow, smooth camera move forward.",
     "day_to_night": "Dramatic transition from bright daytime to cozy nighttime, sun setting, interior lights slowly turning on and glowing warm, evening atmosphere. Camera push in.",
     "staging_inside": "Furniture and decorations appear from the ground, luxury staging reveal. Slow, smooth camera move.",
     "staging_outside": "Landscaping, grass, plants, trees and outdoor furniture appear from the ground, curb appeal reveal. Slow, smooth camera move.",
