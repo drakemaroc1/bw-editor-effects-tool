@@ -573,10 +573,15 @@ def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") 
         success_flag = poll_data["data"].get("successFlag", 0)
         
         if success_flag == 1:  # Success
-            video_url = poll_data["data"]["response"].get("videoUrl")
+            response_data = poll_data["data"].get("response", {})
+            # Try resultUrls first (documented), then videoUrl (fallback)
+            result_urls = response_data.get("resultUrls", [])
+            if result_urls:
+                return result_urls[0]
+            video_url = response_data.get("videoUrl")
             if video_url:
                 return video_url
-            raise Exception("KIE: No video URL in successful response")
+            raise Exception(f"KIE: No video URL in successful response: {response_data}")
         elif success_flag == 2:  # Failed
             raise Exception("KIE: Task failed before completion")
         elif success_flag == 3:  # Generation failed
