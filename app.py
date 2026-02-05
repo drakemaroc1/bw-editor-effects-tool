@@ -1,9 +1,12 @@
 """
 BW Editor Effects Tool
 Real estate video generation with parallel processing
-- Phase 1a: Parallel outpaints (9:16 expansion)
-- Phase 1b: Parallel transforms (Float, Reno only)
+- Phase 1a: Parallel uploads
+- Phase 1b: Parallel outpaints (9:16 expansion)
+- Phase 1c: Parallel transforms (Float, Reno, 3D text)
 - Phase 2: Parallel video generation
+
+UI: Icon grid for effects, per-shot redo controls
 """
 import streamlit as st
 import requests
@@ -26,29 +29,67 @@ st.set_page_config(
     layout="wide"
 )
 
-# Available effects ("None" = no processing, just download original)
-EFFECTS = ["None", "VEO Cam", "Float", "Day to Night", "Staging Inside", "Staging Outside", "Reno", "3D Price", "3D City", "3D Beds"]
+# Custom CSS for better styling
+st.markdown("""
+<style>
+/* Effect grid buttons */
+.effect-btn {
+    height: 70px !important;
+    font-size: 13px !important;
+}
+/* Results grid uniform sizing */
+.result-video video {
+    max-height: 350px;
+    object-fit: contain;
+}
+/* Compact buttons */
+div[data-testid="column"] .stButton button {
+    padding: 0.25rem 0.5rem;
+    font-size: 12px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Effect configuration with icons
+EFFECT_CONFIG = {
+    "None": {"icon": "⬜", "desc": "Original only", "key": "none"},
+    "VEO Cam": {"icon": "🎥", "desc": "Camera motion", "key": "veo_cam"},
+    "Float": {"icon": "🎈", "desc": "Floating furniture", "key": "float"},
+    "Day to Night": {"icon": "🌙", "desc": "Light transition", "key": "day_to_night"},
+    "Staging Inside": {"icon": "🛋️", "desc": "Furniture reveal", "key": "staging_inside"},
+    "Staging Outside": {"icon": "🌳", "desc": "Landscaping reveal", "key": "staging_outside"},
+    "Reno": {"icon": "🔨", "desc": "Construction reveal", "key": "reno"},
+    "3D Price": {"icon": "💰", "desc": "Price overlay", "key": "3d_price"},
+    "3D City": {"icon": "🏙️", "desc": "City overlay", "key": "3d_city"},
+    "3D Beds": {"icon": "🛏️", "desc": "Beds/baths overlay", "key": "3d_beds"},
+}
+
+EFFECTS = list(EFFECT_CONFIG.keys())
 
 def get_effect_key(effect_name):
-    return effect_name.lower().replace(" ", "_")
+    return EFFECT_CONFIG.get(effect_name, {}).get("key", effect_name.lower().replace(" ", "_"))
 
-# Session state
+# Session state initialization
 if "videos" not in st.session_state:
     st.session_state.videos = {}
 if "effect_choices" not in st.session_state:
     st.session_state.effect_choices = {}
+if "jobs" not in st.session_state:
+    st.session_state.jobs = {}
+if "edit_mode" not in st.session_state:
+    st.session_state.edit_mode = {}
 
 # Title
 st.title("🎬 BW Editor Effects Tool")
 
 # Sidebar
 with st.sidebar:
-    st.header("Settings")
-    duration = st.select_slider("Duration", options=["4s", "6s", "8s"], value="4s")
+    st.header("⚙️ Settings")
+    duration = st.select_slider("Video Duration", options=["4s", "6s", "8s"], value="4s")
     
     st.divider()
     
-    st.header("3D Text Content")
+    st.header("📝 3D Text Content")
     text_price = st.text_input("Price", "$1,250,000")
     text_city = st.text_input("City", "Austin, TX")
     text_beds = st.text_input("Beds/Baths", "4 Bed / 3 Bath")
@@ -60,8 +101,187 @@ with st.sidebar:
             del st.session_state[key]
         st.rerun()
 
+
+def render_effect_grid(image_idx: int, current_effect: str):
+    """Render a grid of effect options with icons."""
+    # 5 columns x 2 rows
+    effects_list = EFFECTS
+    
+    for row in range(2):
+        cols = st.columns(5)
+        for col_idx in range(5):
+            effect_idx = row * 5 + col_idx
+            if effect_idx < len(effects_list):
+                effect = effects_list[effect_idx]
+                cfg = EFFECT_CONFIG[effect]
+                is_selected = effect == current_effect
+                
+                with cols[col_idx]:
+                    btn_type = "primary" if is_selected else "secondary"
+                    if st.button(
+                        f"{cfg['icon']}\n{effect}",
+                        key=f"eff_{image_idx}_{effect_idx}",
+                        type=btn_type,
+                        use_container_width=True
+                    ):
+                        st.session_state.effect_choices[image_idx] = effect
+                        st.rerun()
+
+
+def redo_image_for_shot(idx: int, uploaded_files, text_price, text_city, text_beds):
+    """Regenerate image (upload + outpaint + transform) for one shot."""
+    job = st.session_state.jobs.get(idx)
+    if not job:
+        return
+    
+    file = uploaded_files[idx]
+    image_bytes = file.read()
+    file.seek(0)
+    
+    with st.spinner(f"Regenerating image for shot {idx + 1}..."):
+        # Re-upload
+        image_url = upload_image(image_bytes, file.name)
+        job["image_url"] = image_url
+        
+        # Re-outpaint if needed
+        if job["needs_outpaint"]:
+            vertical_url = outpaint_to_vertical(image_url)
+        else:
+            vertical_url = image_url
+        job["vertical_url"] = vertical_url
+        
+        # Re-transform if needed
+        if job["needs_transform"]:
+            end_frame = transform_image(vertical_url, job["effect_key"], job.get("text_content"), use_fal=True)
+            job["end_frame"] = end_frame
+        
+        # Update frames based on effect type
+        update_job_frames(job)
+        
+        # Update result frames (keep old video)
+        if idx in st.session_state.videos:
+            st.session_state.videos[idx]["start_frame"] = job["start_frame"]
+            st.session_state.videos[idx]["end_frame"] = job["end_frame"]
+            st.session_state.videos[idx]["image_regenerated"] = True
+        
+        st.session_state.jobs[idx] = job
+
+
+def redo_video_for_shot(idx: int, duration: str):
+    """Regenerate video from current frames."""
+    job = st.session_state.jobs.get(idx)
+    if not job:
+        return
+    
+    with st.spinner(f"Regenerating video for shot {idx + 1}..."):
+        video_url = generate_video(
+            job["start_frame"],
+            job.get("end_frame", job["start_frame"]),
+            job["prompt"],
+            duration,
+            model=job["video_model"]
+        )
+        
+        st.session_state.videos[idx]["video_url"] = video_url
+        st.session_state.videos[idx]["image_regenerated"] = False
+
+
+def update_job_frames(job):
+    """Set start/end frames based on effect type."""
+    if job["is_text_effect"]:
+        job["start_frame"] = job.get("end_frame", job["vertical_url"])
+        job["end_frame"] = job.get("end_frame", job["vertical_url"])
+    elif job["effect_key"] == "staging_inside":
+        job["start_frame"] = job.get("end_frame", job["vertical_url"])
+        job["end_frame"] = job["vertical_url"]
+    elif job["effect_key"] == "staging_outside":
+        job["start_frame"] = job.get("end_frame", job["vertical_url"])
+        job["end_frame"] = job["vertical_url"]
+    elif job["effect_key"] == "reno":
+        job["start_frame"] = job["vertical_url"]
+        # end_frame already set
+    else:
+        job["start_frame"] = job["vertical_url"]
+        job["end_frame"] = job["vertical_url"]
+
+
+def render_result_card(idx: int, result: dict, uploaded_files, duration, text_price, text_city, text_beds):
+    """Render a single result card with video and controls."""
+    with st.container(border=True):
+        st.markdown(f"**Shot {idx + 1}: {result['effect']}**")
+        
+        if result["status"] == "success":
+            # Main video
+            st.video(result["video_url"])
+            
+            # Frame preview (collapsed)
+            with st.expander("📷 View Frames", expanded=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.caption("Start Frame")
+                    st.image(result.get("start_frame", ""), use_container_width=True)
+                with c2:
+                    st.caption("End Frame")
+                    if result.get("end_frame") != result.get("start_frame"):
+                        st.image(result.get("end_frame", ""), use_container_width=True)
+                    else:
+                        st.info("Same as start")
+            
+            # Check if in prompt edit mode
+            if st.session_state.edit_mode.get(idx) == "prompt":
+                job = st.session_state.jobs.get(idx, {})
+                current_prompt = job.get("prompt", "")
+                new_prompt = st.text_area(
+                    "Edit video prompt",
+                    value=current_prompt,
+                    key=f"prompt_edit_{idx}",
+                    height=80
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("💾 Save", key=f"save_prompt_{idx}", use_container_width=True):
+                        st.session_state.jobs[idx]["prompt"] = new_prompt
+                        st.session_state.edit_mode[idx] = None
+                        st.rerun()
+                with c2:
+                    if st.button("❌ Cancel", key=f"cancel_prompt_{idx}", use_container_width=True):
+                        st.session_state.edit_mode[idx] = None
+                        st.rerun()
+            else:
+                # Action buttons
+                c1, c2, c3, c4 = st.columns(4)
+                
+                with c1:
+                    if st.button("🔄 Redo Img", key=f"redo_img_{idx}", use_container_width=True):
+                        redo_image_for_shot(idx, uploaded_files, text_price, text_city, text_beds)
+                        st.rerun()
+                
+                with c2:
+                    if st.button("✏️ Prompt", key=f"edit_prompt_{idx}", use_container_width=True):
+                        st.session_state.edit_mode[idx] = "prompt"
+                        st.rerun()
+                
+                with c3:
+                    regen_label = "🎬 Redo Vid" if not result.get("image_regenerated") else "🎬 Gen Vid!"
+                    if st.button(regen_label, key=f"redo_vid_{idx}", use_container_width=True):
+                        redo_video_for_shot(idx, duration)
+                        st.rerun()
+                
+                with c4:
+                    st.download_button(
+                        "⬇️",
+                        data=requests.get(result["video_url"]).content,
+                        file_name=f"video_{idx + 1}.mp4",
+                        mime="video/mp4",
+                        key=f"dl_{idx}",
+                        use_container_width=True
+                    )
+        else:
+            st.error(f"Error: {result.get('error', 'Unknown error')}")
+
+
 # Main content
-st.subheader("Upload Images & Assign Effects")
+st.subheader("📤 Upload Images & Assign Effects")
 
 uploaded_files = st.file_uploader(
     "Upload listing images",
@@ -77,41 +297,45 @@ if uploaded_files:
         if i not in st.session_state.effect_choices:
             st.session_state.effect_choices[i] = "VEO Cam"
     
-    # Display grid
-    cols_per_row = 4
-    for row_start in range(0, num_files, cols_per_row):
-        cols = st.columns(cols_per_row)
-        for col_idx, col in enumerate(cols):
-            img_idx = row_start + col_idx
-            if img_idx < num_files:
-                with col:
-                    st.image(uploaded_files[img_idx], use_container_width=True)
-                    current = st.session_state.effect_choices.get(img_idx, "VEO Cam")
-                    idx = EFFECTS.index(current) if current in EFFECTS else 0
-                    new_effect = st.selectbox(
-                        f"Effect {img_idx + 1}",
-                        EFFECTS,
-                        index=idx,
-                        key=f"effect_{img_idx}",
-                        label_visibility="collapsed"
-                    )
-                    st.session_state.effect_choices[img_idx] = new_effect
+    # Display images with effect grids
+    for img_idx in range(num_files):
+        with st.container(border=True):
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                st.image(uploaded_files[img_idx], use_container_width=True)
+                st.caption(f"Image {img_idx + 1}")
+            
+            with col2:
+                current_effect = st.session_state.effect_choices.get(img_idx, "VEO Cam")
+                st.markdown(f"**Selected: {current_effect}**")
+                render_effect_grid(img_idx, current_effect)
     
     st.divider()
     
     # Generate button
-    if st.button("🚀 Generate Videos", type="primary", use_container_width=True):
+    if st.button("🚀 Generate All Videos", type="primary", use_container_width=True):
         st.session_state.videos = {}
+        st.session_state.jobs = {}
         progress = st.progress(0)
         status = st.empty()
         
-        # Prepare all jobs with their data
+        # Prepare all jobs
         jobs = []
         for i, file in enumerate(uploaded_files):
             effect_name = st.session_state.effect_choices[i]
             effect_key = get_effect_key(effect_name)
             image_bytes = file.read()
             file.seek(0)
+            
+            # Skip "None" effect
+            if effect_key == "none":
+                st.session_state.videos[i] = {
+                    "idx": i,
+                    "status": "skipped",
+                    "effect": effect_name
+                }
+                continue
             
             # Get text content for 3D text effects
             text_content = None
@@ -122,10 +346,9 @@ if uploaded_files:
             elif effect_key == "3d_beds":
                 text_content = text_beds
             
-            # Build video prompt - 3D text is already baked into image by Nano Banana
             video_prompt = EFFECT_PROMPTS.get(effect_key, EFFECT_PROMPTS["veo_cam"])
             
-            jobs.append({
+            job = {
                 "idx": i,
                 "effect_name": effect_name,
                 "effect_key": effect_key,
@@ -137,13 +360,19 @@ if uploaded_files:
                 "is_text_effect": effect_key in TEXT_EFFECTS,
                 "video_model": EFFECT_VIDEO_MODEL.get(effect_key, "veo"),
                 "prompt": video_prompt
-            })
+            }
+            jobs.append(job)
+            st.session_state.jobs[i] = job
         
-        total_steps = num_files * 3  # upload + outpaint/skip + video
+        if not jobs:
+            st.warning("All images set to 'None' - nothing to generate")
+            st.stop()
+        
+        total_steps = len(jobs) * 3
         completed_steps = 0
         
         # === PHASE 1a: Parallel uploads ===
-        status.text(f"[Phase 1a] Uploading {num_files} images...")
+        status.text(f"[Phase 1a] Uploading {len(jobs)} images...")
         
         def upload_job(job):
             url = upload_image(job["image_bytes"], job["filename"])
@@ -153,11 +382,15 @@ if uploaded_files:
             futures = {executor.submit(upload_job, j): j for j in jobs}
             for future in as_completed(futures):
                 result = future.result()
-                jobs[result["idx"]]["image_url"] = result["url"]
+                idx = result["idx"]
+                for j in jobs:
+                    if j["idx"] == idx:
+                        j["image_url"] = result["url"]
+                        st.session_state.jobs[idx]["image_url"] = result["url"]
                 completed_steps += 1
                 progress.progress(completed_steps / total_steps)
         
-        # === PHASE 1b: Parallel outpaints (for effects that need 9:16 expansion) ===
+        # === PHASE 1b: Parallel outpaints ===
         outpaint_jobs = [j for j in jobs if j["needs_outpaint"]]
         
         if outpaint_jobs:
@@ -171,18 +404,22 @@ if uploaded_files:
                 futures = {executor.submit(outpaint_job, j): j for j in outpaint_jobs}
                 for future in as_completed(futures):
                     result = future.result()
-                    jobs[result["idx"]]["vertical_url"] = result["vertical"]
+                    idx = result["idx"]
+                    for j in jobs:
+                        if j["idx"] == idx:
+                            j["vertical_url"] = result["vertical"]
+                            st.session_state.jobs[idx]["vertical_url"] = result["vertical"]
                     completed_steps += 1
                     progress.progress(completed_steps / total_steps)
         
-        # For any jobs that didn't need outpaint, use original image
         for job in jobs:
             if not job["needs_outpaint"]:
                 job["vertical_url"] = job["image_url"]
+                st.session_state.jobs[job["idx"]]["vertical_url"] = job["image_url"]
                 completed_steps += 1
                 progress.progress(completed_steps / total_steps)
         
-        # === PHASE 1c: Parallel transforms (only Float, Reno) ===
+        # === PHASE 1c: Parallel transforms ===
         transform_jobs = [j for j in jobs if j["needs_transform"]]
         
         if transform_jobs:
@@ -196,33 +433,20 @@ if uploaded_files:
                 futures = {executor.submit(transform_job, j): j for j in transform_jobs}
                 for future in as_completed(futures):
                     result = future.result()
-                    jobs[result["idx"]]["end_frame"] = result["transformed"]
+                    idx = result["idx"]
+                    for j in jobs:
+                        if j["idx"] == idx:
+                            j["end_frame"] = result["transformed"]
+                            st.session_state.jobs[idx]["end_frame"] = result["transformed"]
         
-        # Set start/end frames for all jobs
+        # Set frames for all jobs
         for job in jobs:
-            if job["is_text_effect"]:
-                # 3D text: use transformed image (with 3D text added by Nano Banana)
-                job["start_frame"] = job.get("end_frame", job["vertical_url"])  # transformed with 3D text
-                job["end_frame"] = job.get("end_frame", job["vertical_url"])    # same image
-            elif job["effect_key"] == "staging_inside":
-                # Staging Inside: empty room (transformed) → furnished (original)
-                job["start_frame"] = job.get("end_frame", job["vertical_url"])  # transformed (empty)
-                job["end_frame"] = job["vertical_url"]  # original (furnished)
-            elif job["effect_key"] == "staging_outside":
-                # Staging Outside: dirt (transformed) → landscaped (original) - landscaping APPEARS
-                job["start_frame"] = job.get("end_frame", job["vertical_url"])  # transformed (dirt)
-                job["end_frame"] = job["vertical_url"]  # original (landscaped)
-            elif job["effect_key"] == "reno":
-                # Reno: furnished (original) → construction studs (transformed)
-                job["start_frame"] = job["vertical_url"]  # original (furnished)
-                # end_frame already set by transform (studs)
-            else:
-                # VEO effects (float, day_to_night, veo_cam): vertical frame only
-                job["start_frame"] = job["vertical_url"]
-                job["end_frame"] = job["vertical_url"]
+            update_job_frames(job)
+            st.session_state.jobs[job["idx"]]["start_frame"] = job["start_frame"]
+            st.session_state.jobs[job["idx"]]["end_frame"] = job.get("end_frame", job["start_frame"])
         
         # === PHASE 2: Parallel video generation ===
-        status.text(f"[Phase 2] Generating {num_files} videos in parallel...")
+        status.text(f"[Phase 2] Generating {len(jobs)} videos...")
         
         def generate_video_job(job):
             try:
@@ -239,7 +463,8 @@ if uploaded_files:
                     "effect": job["effect_name"],
                     "video_url": video_url,
                     "start_frame": job["start_frame"],
-                    "end_frame": job.get("end_frame", job["start_frame"])
+                    "end_frame": job.get("end_frame", job["start_frame"]),
+                    "image_regenerated": False
                 }
             except Exception as e:
                 return {
@@ -263,55 +488,27 @@ if uploaded_files:
     # Display results
     if st.session_state.videos:
         st.divider()
-        st.subheader("Generated Videos")
+        st.subheader("📹 Generated Videos")
         
-        for i in range(num_files):
-            if i not in st.session_state.videos:
-                continue
-            
-            result = st.session_state.videos[i]
-            
-            with st.expander(f"Video {i+1}: {result['effect']}", expanded=True):
-                if result["status"] == "success":
-                    col1, col2, col3 = st.columns([1, 1, 1])
-                    with col1:
-                        st.caption("Start Frame")
-                        st.image(result.get("start_frame", ""), use_container_width=True)
-                    with col2:
-                        st.caption("Video")
-                        st.video(result["video_url"])
-                    with col3:
-                        st.caption("End Frame")
-                        if result.get("end_frame") != result.get("start_frame"):
-                            st.image(result.get("end_frame", ""), use_container_width=True)
-                        else:
-                            st.info("Same as start")
-                        st.download_button(
-                            "⬇️ Download",
-                            data=requests.get(result["video_url"]).content,
-                            file_name=f"video_{i+1}.mp4",
-                            mime="video/mp4",
-                            key=f"dl_{i}"
-                        )
-                else:
-                    st.error(f"Error: {result.get('error', 'Unknown error')}")
+        # Results in 2-column grid
+        results_to_show = [(i, st.session_state.videos[i]) for i in range(num_files) if i in st.session_state.videos and st.session_state.videos[i].get("status") != "skipped"]
+        
+        for row_start in range(0, len(results_to_show), 2):
+            cols = st.columns(2)
+            for col_idx in range(2):
+                result_idx = row_start + col_idx
+                if result_idx < len(results_to_show):
+                    idx, result = results_to_show[result_idx]
+                    with cols[col_idx]:
+                        render_result_card(idx, result, uploaded_files, duration, text_price, text_city, text_beds)
 
 else:
-    st.info("Upload listing images to get started")
+    st.info("👆 Upload listing images to get started")
     
-    with st.expander("Available Effects"):
-        st.markdown("""
-        **VEO Cam** — Camera motion only (outpaint → VEO)
-        
-        **Float** — Furniture floats up (outpaint → VEO)
-        
-        **Day to Night** — Day→night transition (outpaint → VEO)
-        
-        **Staging Inside** — Empty→furnished reveal (outpaint → transform → Seedance)
-        
-        **Staging Outside** — Landscaping reveal (outpaint → transform → Seedance)
-        
-        **Reno** — Construction reveal (outpaint → transform → Seedance)
-        
-        **3D Price/City/Beds** — 3D text overlay (outpaint → transform → VEO)
-        """)
+    # Effect reference
+    st.subheader("Available Effects")
+    cols = st.columns(5)
+    for i, (name, cfg) in enumerate(EFFECT_CONFIG.items()):
+        with cols[i % 5]:
+            st.markdown(f"**{cfg['icon']} {name}**")
+            st.caption(cfg['desc'])
