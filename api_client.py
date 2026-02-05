@@ -415,10 +415,17 @@ def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
     from PIL import Image
     from io import BytesIO
     
-    # Download original image
-    resp = requests.get(image_url)
-    resp.raise_for_status()
-    original_data = resp.content
+    # Handle both data URLs and http URLs
+    if image_url.startswith('data:'):
+        # Base64 data URL - decode it
+        # Format: data:image/jpeg;base64,/9j/4AAQ...
+        header, encoded = image_url.split(',', 1)
+        original_data = base64.b64decode(encoded)
+    else:
+        # HTTP URL - download it
+        resp = requests.get(image_url)
+        resp.raise_for_status()
+        original_data = resp.content
     
     max_bytes = max_size_kb * 1024
     
