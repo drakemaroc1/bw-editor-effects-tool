@@ -100,8 +100,8 @@ def upload_image(image_bytes: bytes, filename: str = "image.png") -> str:
 
 def outpaint_to_vertical(image_url: str) -> str:
     """
-    Convert image to 9:16 vertical using Nano Banana Pro native aspect ratio.
-    NO expansion prompt - just reformat to 9:16. The model handles it naturally.
+    Expand image to 9:16 vertical using Nano Banana Pro with explicit outpainting.
+    Generates new content above/below to fill the vertical frame.
     Output: 4K resolution at 9:16 aspect ratio.
     """
     ensure_fal_key()
@@ -109,7 +109,7 @@ def outpaint_to_vertical(image_url: str) -> str:
         "fal-ai/nano-banana-pro/edit",
         arguments={
             "image_urls": [image_url],
-            "prompt": "This is a professional real estate photo. Reformat to vertical 9:16 aspect ratio.",
+            "prompt": "Expand this professional real estate photo to vertical 9:16 format. Generate natural content above (sky or ceiling) and below (ground or floor) to fill the frame. Keep the original image content centered and unchanged.",
             "aspect_ratio": "9:16",
             "resolution": "4K",
             "output_format": "png"
