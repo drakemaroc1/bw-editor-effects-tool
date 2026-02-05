@@ -1,94 +1,70 @@
 """
-Editor Effects Tool — Streamlit MVP v2
-Cleaner UI with auto-assignment and smaller thumbnails
+BW Editor Effects Tool
+Real estate video generation with parallel processing
+- Phase 1a: Parallel outpaints (9:16 expansion)
+- Phase 1b: Parallel transforms (Float, Reno only)
+- Phase 2: Parallel video generation
 """
-
 import streamlit as st
-from pathlib import Path
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from api_client import (
-    generate_nano_banana_image,
-    generate_effect_frames,
-    get_camera_movement_prompt
+    upload_image,
+    outpaint_to_vertical,
+    transform_image,
+    generate_video,
+    EFFECT_PROMPTS,
+    EFFECT_VIDEO_MODEL,
+    TRANSFORM_EFFECTS,
+    NEEDS_OUTPAINT,
+    TEXT_EFFECTS
 )
 
-# Page config
 st.set_page_config(
-    page_title="BW Editor Effects",
+    page_title="BW Editor Effects Tool",
     page_icon="🎬",
     layout="wide"
 )
 
-# Custom CSS for smaller thumbnails
-st.markdown("""
-<style>
-    .small-thumb {
-        max-height: 120px;
-        object-fit: cover;
-    }
-    .stSelectbox > div > div {
-        font-size: 12px;
-    }
-    div[data-testid="column"] {
-        padding: 5px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Available effects
+EFFECTS = ["VEO Cam", "Float", "Day to Night", "Staging Inside", "Staging Outside", "Reno", "3D Price", "3D City", "3D Beds"]
 
-# Title
-st.title("🎬 Editor Effects Tool")
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("📝 Listing Info")
-    price = st.text_input("Price", "$749,000")
-    city = st.text_input("City", "Austin, TX")
-    beds_baths = st.text_input("Beds/Baths", "4 Bed • 3 Bath")
-    property_desc = st.text_input("Description", "Modern home with pool")
-    
-    st.markdown("---")
-    
-    # Quick assign buttons
-    st.header("⚡ Quick Assign")
-    if st.button("🌅 All Day→Night", use_container_width=True):
-        st.session_state.bulk_assign = "Lighting Transform (Day→Night)"
-    if st.button("📹 All Orbit", use_container_width=True):
-        st.session_state.bulk_assign = "Orbit"
-    if st.button("🎯 Auto Mix", use_container_width=True):
-        st.session_state.bulk_assign = "auto_mix"
-
-# Effect options (shorter labels)
-EFFECTS = {
-    "Day→Night": "Lighting Transform (Day→Night)",
-    "Staging": "Virtual Staging (Empty→Furnished)",
-    "Float": "Furniture Float", 
-    "Reno": "Construction → Finished",
-    "Punch-in": "Close-up Punch-in",
-    "Orbit": "Orbit",
-    "Dolly": "Dolly In",
-    "Crane": "Crane Up",
-    "Push": "Push",
-    "Pull": "Pull/Reveal",
-    "3D Price": "Push + 3D Text (Price)",
-    "3D City": "Push + 3D Text (City)",
-    "3D Beds": "Push + 3D Text (Beds/Baths)",
-}
-
-EFFECT_LABELS = list(EFFECTS.keys())
-
-# Auto-mix assignment pattern
-AUTO_MIX = ["Day→Night", "Orbit", "3D Price", "Dolly", "Staging", "Crane", "3D City", "Push", "Float", "Pull"]
+def get_effect_key(effect_name):
+    return effect_name.lower().replace(" ", "_")
 
 # Session state
-if 'assignments' not in st.session_state:
-    st.session_state.assignments = {}
-if 'generated_results' not in st.session_state:
-    st.session_state.generated_results = {}
-if 'bulk_assign' not in st.session_state:
-    st.session_state.bulk_assign = None
+if "videos" not in st.session_state:
+    st.session_state.videos = {}
+if "effect_choices" not in st.session_state:
+    st.session_state.effect_choices = {}
 
-# --- UPLOAD ---
+# Title
+st.title("🎬 BW Editor Effects Tool")
+
+# Sidebar
+with st.sidebar:
+    st.header("Settings")
+    duration = st.select_slider("Duration", options=["4s", "6s", "8s"], value="4s")
+    
+    st.divider()
+    
+    st.header("3D Text Content")
+    text_price = st.text_input("Price", "$1,250,000")
+    text_city = st.text_input("City", "Austin, TX")
+    text_beds = st.text_input("Beds/Baths", "4 Bed / 3 Bath")
+    
+    st.divider()
+    
+    if st.button("🔄 Start Over", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+# Main content
+st.subheader("Upload Images & Assign Effects")
+
 uploaded_files = st.file_uploader(
-    "📁 Drop listing images",
+    "Upload listing images",
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True
 )
@@ -96,144 +72,235 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     num_files = len(uploaded_files)
     
-    # Handle bulk assignment
-    if st.session_state.bulk_assign:
-        if st.session_state.bulk_assign == "auto_mix":
-            for i in range(num_files):
-                st.session_state.assignments[i] = AUTO_MIX[i % len(AUTO_MIX)]
-        else:
-            for i in range(num_files):
-                # Find short label for the full effect name
-                for short, full in EFFECTS.items():
-                    if full == st.session_state.bulk_assign:
-                        st.session_state.assignments[i] = short
-                        break
-        st.session_state.bulk_assign = None
-        st.rerun()
-    
-    # Initialize assignments if needed
+    # Initialize effect choices
     for i in range(num_files):
-        if i not in st.session_state.assignments:
-            st.session_state.assignments[i] = AUTO_MIX[i % len(AUTO_MIX)]
+        if i not in st.session_state.effect_choices:
+            st.session_state.effect_choices[i] = "VEO Cam"
     
-    st.markdown("### 🖼️ Assign Effects (click to change)")
+    # Display grid
+    cols_per_row = 4
+    for row_start in range(0, num_files, cols_per_row):
+        cols = st.columns(cols_per_row)
+        for col_idx, col in enumerate(cols):
+            img_idx = row_start + col_idx
+            if img_idx < num_files:
+                with col:
+                    st.image(uploaded_files[img_idx], use_container_width=True)
+                    current = st.session_state.effect_choices.get(img_idx, "VEO Cam")
+                    idx = EFFECTS.index(current) if current in EFFECTS else 0
+                    new_effect = st.selectbox(
+                        f"Effect {img_idx + 1}",
+                        EFFECTS,
+                        index=idx,
+                        key=f"effect_{img_idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.session_state.effect_choices[img_idx] = new_effect
     
-    # Grid with 5 columns for smaller thumbnails
-    cols = st.columns(5)
-    
-    for i, file in enumerate(uploaded_files):
-        with cols[i % 5]:
-            st.image(file, use_container_width=True)
-            current = st.session_state.assignments.get(i, "Day→Night")
-            new_val = st.selectbox(
-                f"#{i+1}",
-                EFFECT_LABELS,
-                index=EFFECT_LABELS.index(current) if current in EFFECT_LABELS else 0,
-                key=f"sel_{i}",
-                label_visibility="collapsed"
-            )
-            st.session_state.assignments[i] = new_val
-    
-    st.markdown("---")
-    
-    # Summary
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        st.markdown(f"**{num_files} images** ready to process")
-    with col2:
-        effect_count = sum(1 for a in st.session_state.assignments.values() if a in ["Day→Night", "Staging", "Float", "Reno", "Punch-in"])
-        st.markdown(f"🎨 {effect_count} effects")
-    with col3:
-        camera_count = num_files - effect_count
-        st.markdown(f"📹 {camera_count} camera")
+    st.divider()
     
     # Generate button
-    if st.button("🚀 GENERATE ALL", type="primary", use_container_width=True):
+    if st.button("🚀 Generate Videos", type="primary", use_container_width=True):
+        st.session_state.videos = {}
         progress = st.progress(0)
         status = st.empty()
         
-        results = {}
-        
+        # Prepare all jobs with their data
+        jobs = []
         for i, file in enumerate(uploaded_files):
-            short_label = st.session_state.assignments.get(i, "Day→Night")
-            effect_type = EFFECTS.get(short_label, short_label)
+            effect_name = st.session_state.effect_choices[i]
+            effect_key = get_effect_key(effect_name)
+            image_bytes = file.read()
+            file.seek(0)
             
-            status.text(f"Processing {i+1}/{num_files}: {short_label}...")
-            
-            # Get text content for 3D effects
+            # Get text content for 3D text effects
             text_content = None
-            if "Price" in effect_type:
-                text_content = price
-            elif "City" in effect_type:
-                text_content = city
-            elif "Beds" in effect_type:
-                text_content = beds_baths
+            if effect_key == "3d_price":
+                text_content = text_price
+            elif effect_key == "3d_city":
+                text_content = text_city
+            elif effect_key == "3d_beds":
+                text_content = text_beds
             
+            jobs.append({
+                "idx": i,
+                "effect_name": effect_name,
+                "effect_key": effect_key,
+                "image_bytes": image_bytes,
+                "filename": file.name,
+                "text_content": text_content,
+                "needs_outpaint": effect_key in NEEDS_OUTPAINT,
+                "needs_transform": effect_key in TRANSFORM_EFFECTS,
+                "is_text_effect": effect_key in TEXT_EFFECTS,
+                "video_model": EFFECT_VIDEO_MODEL.get(effect_key, "veo"),
+                "prompt": EFFECT_PROMPTS.get(effect_key, EFFECT_PROMPTS["veo_cam"])
+            })
+        
+        total_steps = num_files * 3  # upload + outpaint/skip + video
+        completed_steps = 0
+        
+        # === PHASE 1a: Parallel uploads ===
+        status.text(f"[Phase 1a] Uploading {num_files} images...")
+        
+        def upload_job(job):
+            url = upload_image(job["image_bytes"], job["filename"])
+            return {"idx": job["idx"], "url": url}
+        
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(upload_job, j): j for j in jobs}
+            for future in as_completed(futures):
+                result = future.result()
+                jobs[result["idx"]]["image_url"] = result["url"]
+                completed_steps += 1
+                progress.progress(completed_steps / total_steps)
+        
+        # === PHASE 1b: Parallel outpaints (only for effects that need it) ===
+        outpaint_jobs = [j for j in jobs if j["needs_outpaint"]]
+        text_jobs = [j for j in jobs if j["is_text_effect"]]
+        
+        if outpaint_jobs:
+            status.text(f"[Phase 1b] Expanding {len(outpaint_jobs)} images to 9:16...")
+            
+            def outpaint_job(job):
+                vertical = outpaint_to_vertical(job["image_url"])
+                return {"idx": job["idx"], "vertical": vertical}
+            
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(outpaint_job, j): j for j in outpaint_jobs}
+                for future in as_completed(futures):
+                    result = future.result()
+                    jobs[result["idx"]]["vertical_url"] = result["vertical"]
+                    completed_steps += 1
+                    progress.progress(completed_steps / total_steps)
+        
+        # Text effects skip outpaint - use original image
+        for job in text_jobs:
+            job["vertical_url"] = job["image_url"]
+            completed_steps += 1
+            progress.progress(completed_steps / total_steps)
+        
+        # === PHASE 1c: Parallel transforms (only Float, Reno) ===
+        transform_jobs = [j for j in jobs if j["needs_transform"]]
+        
+        if transform_jobs:
+            status.text(f"[Phase 1c] Transforming {len(transform_jobs)} images...")
+            
+            def transform_job(job):
+                transformed = transform_image(job["vertical_url"], job["effect_key"], job.get("text_content"))
+                return {"idx": job["idx"], "transformed": transformed}
+            
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(transform_job, j): j for j in transform_jobs}
+                for future in as_completed(futures):
+                    result = future.result()
+                    jobs[result["idx"]]["end_frame"] = result["transformed"]
+        
+        # Set start/end frames for all jobs
+        for job in jobs:
+            if job["is_text_effect"]:
+                # 3D text: original image only, VEO adds text in video
+                job["start_frame"] = job["image_url"]
+                job["end_frame"] = job["image_url"]
+            elif job["needs_transform"]:
+                # Float/Reno: vertical start, transformed end
+                job["start_frame"] = job["vertical_url"]
+                # end_frame already set by transform
+            else:
+                # VEO Cam, Day→Night, Staging: vertical frame only
+                job["start_frame"] = job["vertical_url"]
+                job["end_frame"] = job["vertical_url"]
+        
+        # === PHASE 2: Parallel video generation ===
+        status.text(f"[Phase 2] Generating {num_files} videos in parallel...")
+        
+        def generate_video_job(job):
             try:
-                if short_label in ["Orbit", "Dolly", "Crane", "Push", "Pull"]:
-                    # Camera only
-                    prompt = get_camera_movement_prompt(property_desc, effect_type)
-                    results[i] = {
-                        'type': 'camera',
-                        'label': short_label,
-                        'prompt': prompt,
-                        'status': '✅'
-                    }
-                else:
-                    # Effect with frames
-                    frame_result = generate_effect_frames(property_desc, effect_type, text_content)
-                    results[i] = {
-                        'type': 'effect',
-                        'label': short_label,
-                        **frame_result,
-                        'status': '✅'
-                    }
-            except Exception as e:
-                results[i] = {
-                    'type': 'error',
-                    'label': short_label,
-                    'error': str(e),
-                    'status': '❌'
+                video_url = generate_video(
+                    job["start_frame"],
+                    job.get("end_frame", job["start_frame"]),
+                    job["prompt"],
+                    duration,
+                    model=job["video_model"]
+                )
+                return {
+                    "idx": job["idx"],
+                    "status": "success",
+                    "effect": job["effect_name"],
+                    "video_url": video_url,
+                    "start_frame": job["start_frame"],
+                    "end_frame": job.get("end_frame", job["start_frame"])
                 }
-            
-            progress.progress((i + 1) / num_files)
+            except Exception as e:
+                return {
+                    "idx": job["idx"],
+                    "status": "error",
+                    "effect": job["effect_name"],
+                    "error": str(e)
+                }
         
-        st.session_state.generated_results = results
-        status.text("✅ Done!")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(generate_video_job, j): j for j in jobs}
+            for future in as_completed(futures):
+                result = future.result()
+                st.session_state.videos[result["idx"]] = result
+                completed_steps += 1
+                progress.progress(completed_steps / total_steps)
+        
+        status.text("✅ Complete!")
+        st.rerun()
     
-    # Results
-    if st.session_state.generated_results:
-        st.markdown("---")
-        st.markdown("### 📤 Results")
+    # Display results
+    if st.session_state.videos:
+        st.divider()
+        st.subheader("Generated Videos")
         
-        results = st.session_state.generated_results
-        
-        for i, (idx, result) in enumerate(results.items()):
-            with st.expander(f"{result['status']} Shot {idx+1}: {result['label']}", expanded=False):
-                if result.get('error'):
-                    st.error(result['error'])
-                elif result['type'] == 'camera':
-                    st.code(result['prompt'], language=None)
+        for i in range(num_files):
+            if i not in st.session_state.videos:
+                continue
+            
+            result = st.session_state.videos[i]
+            
+            with st.expander(f"Video {i+1}: {result['effect']}", expanded=True):
+                if result["status"] == "success":
+                    col1, col2, col3 = st.columns([1, 1, 1])
+                    with col1:
+                        st.caption("Start Frame")
+                        st.image(result.get("start_frame", ""), use_container_width=True)
+                    with col2:
+                        st.caption("Video")
+                        st.video(result["video_url"])
+                    with col3:
+                        st.caption("End Frame")
+                        if result.get("end_frame") != result.get("start_frame"):
+                            st.image(result.get("end_frame", ""), use_container_width=True)
+                        else:
+                            st.info("Same as start")
+                        st.download_button(
+                            "⬇️ Download",
+                            data=requests.get(result["video_url"]).content,
+                            file_name=f"video_{i+1}.mp4",
+                            mime="video/mp4",
+                            key=f"dl_{i}"
+                        )
                 else:
-                    col1, col2 = st.columns(2)
-                    if result.get('start_frame'):
-                        with col1:
-                            st.image(result['start_frame'], caption="Start")
-                    if result.get('end_frame'):
-                        with col2:
-                            st.image(result['end_frame'], caption="End")
-                    elif result.get('start_frame'):
-                        st.info("Single frame effect")
+                    st.error(f"Error: {result.get('error', 'Unknown error')}")
 
 else:
-    st.info("👆 Upload images to get started")
+    st.info("Upload listing images to get started")
     
-    # Show effect options
-    with st.expander("Available effects"):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**🎨 Effects (frame generation)**")
-            st.markdown("- Day→Night\n- Staging\n- Float\n- Reno\n- Punch-in")
-        with col2:
-            st.markdown("**📹 Camera (VEO prompt)**")
-            st.markdown("- Orbit\n- Dolly\n- Crane\n- Push\n- Pull")
+    with st.expander("Available Effects"):
+        st.markdown("""
+        **VEO Cam** — Camera motion only (outpaint → VEO)
+        
+        **Float** — Furniture floats up (outpaint → transform → Seedance)
+        
+        **Day to Night** — Day→night transition (outpaint → VEO)
+        
+        **Staging Inside** — Interior staging (outpaint → VEO)
+        
+        **Staging Outside** — Exterior staging (outpaint → VEO)
+        
+        **Reno** — Construction reveal (outpaint → transform → Seedance)
+        
+        **3D Price/City/Beds** — Text overlay (original → VEO, no outpaint)
+        """)
