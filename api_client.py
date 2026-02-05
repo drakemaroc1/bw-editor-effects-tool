@@ -62,11 +62,27 @@ def load_gemini_client():
     raise FileNotFoundError("Google credentials not found")
 
 
-# Set FAL_KEY in environment for fal_client
-os.environ['FAL_KEY'] = load_fal_api_key()
+# Lazy load API keys - will be set on first use
+_fal_key_loaded = False
+_gemini_client = None
 
-# Initialize Gemini client
-gemini_client = load_gemini_client()
+def ensure_fal_key():
+    global _fal_key_loaded
+    if not _fal_key_loaded:
+        try:
+            os.environ['FAL_KEY'] = load_fal_api_key()
+            _fal_key_loaded = True
+        except FileNotFoundError:
+            pass  # Will fail later when actually used
+
+def get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        try:
+            _gemini_client = load_gemini_client()
+        except FileNotFoundError:
+            pass
+    return _gemini_client
 
 
 def upload_image(image_bytes: bytes, filename: str = "image.png") -> str:
@@ -88,6 +104,7 @@ def outpaint_to_vertical(image_url: str) -> str:
     NO expansion prompt - just reformat to 9:16. The model handles it naturally.
     Output: 4K resolution at 9:16 aspect ratio.
     """
+    ensure_fal_key()
     result = fal_client.subscribe(
         "fal-ai/nano-banana-pro/edit",
         arguments={
@@ -106,6 +123,7 @@ def outpaint_to_vertical_legacy(image_url: str) -> str:
     LEGACY: Old outpaint method that creates visible seams.
     Kept for comparison/testing. DO NOT USE IN PRODUCTION.
     """
+    ensure_fal_key()
     result = fal_client.subscribe(
         "fal-ai/image-apps-v2/outpaint",
         arguments={
@@ -161,7 +179,7 @@ def transform_image_gemini(image_url: str, effect: str, text_content: str = None
     
     # Call Gemini API with image + prompt
     # Using gemini-2.5-flash-image for speed; upgrade to gemini-3-pro-image-preview for quality
-    response = gemini_client.models.generate_content(
+    response = get_gemini_client().models.generate_content(
         model="gemini-2.5-flash-image",
         contents=[
             types.Content(
@@ -192,6 +210,7 @@ def transform_image_fal(image_url: str, effect: str, text_content: str = None) -
     Transform image using fal.ai Nano Banana Pro /edit.
     Creates start frames for Seedance reveal effects.
     """
+    ensure_fal_key()
     prompts = {
         "reno": "This same building completely stripped down to bare construction studs and exposed framing, active demolition renovation site, no furniture just raw structure.",
         "staging_inside": "Make this room bare and remove all furniture. Empty room with no furniture or decor.",
@@ -240,6 +259,7 @@ def generate_video_seedance(first_frame_url: str, last_frame_url: str, prompt: s
     Generate video from start/end frames using Seedance 1.5 Pro.
     Use for effects with distinct start and end frames (Float, Reno).
     """
+    ensure_fal_key()
     dur = duration.replace("s", "") if duration else "5"
     
     result = fal_client.subscribe(
@@ -263,6 +283,7 @@ def generate_video_veo(image_url: str, prompt: str, duration: str = "4s", end_im
     - Single frame: uses image-to-video endpoint
     - Start+end frames: uses first-last-frame-to-video endpoint
     """
+    ensure_fal_key()
     if end_image_url and end_image_url != image_url:
         # Use first/last frame endpoint for start→end transitions
         result = fal_client.subscribe(
