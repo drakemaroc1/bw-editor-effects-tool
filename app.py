@@ -16,7 +16,7 @@ from api_client import (
     outpaint_to_vertical,
     transform_image,
     generate_video,
-    generate_video_kling,
+    generate_video_veo,
     EFFECT_PROMPTS,
     EFFECT_VIDEO_MODEL,
     TRANSFORM_EFFECTS,
@@ -626,15 +626,15 @@ with tab_shotgen:
                 jobs.append(job)
                 st.session_state.sg_jobs[i] = job
 
-            status.text(f"Generating {len(jobs)} videos with Kling 2.1...")
+            status.text(f"Generating {len(jobs)} videos with VEO 3.1 Fast...")
 
             # Parallel video generation
             def gen_sg_video(job):
                 try:
-                    video_url = generate_video_kling(
+                    video_url = generate_video_veo(
                         job["image_url"],
                         job["prompt"],
-                        job["duration"]
+                        job["duration"] + "s"  # VEO expects "5s" format
                     )
                     return {
                         "idx": job["idx"],
@@ -736,10 +736,10 @@ with tab_shotgen:
                                                 if job:
                                                     with st.spinner(f"Regenerating shot {idx+1}..."):
                                                         try:
-                                                            video_url = generate_video_kling(
+                                                            video_url = generate_video_veo(
                                                                 job["image_url"],
                                                                 job["prompt"],
-                                                                job["duration"]
+                                                                job["duration"] + "s"  # VEO expects "5s" format
                                                             )
                                                             st.session_state.sg_results[idx] = {
                                                                 "idx": idx,
