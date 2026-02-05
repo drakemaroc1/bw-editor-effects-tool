@@ -405,10 +405,10 @@ def load_kie_api_key() -> str:
     raise FileNotFoundError("KIE API key not found")
 
 
-def compress_image_for_kie(image_url: str, max_size_mb: float = 4.0) -> str:
+def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
     """
     Download, compress, and re-upload image to meet KIE API size limits.
-    KIE has strict image size limits - compress to ~4MB max.
+    KIE requires images under 700KB.
     
     Returns new URL of compressed image.
     """
@@ -420,36 +420,49 @@ def compress_image_for_kie(image_url: str, max_size_mb: float = 4.0) -> str:
     resp.raise_for_status()
     original_data = resp.content
     
+    max_bytes = max_size_kb * 1024
+    
     # If already small enough, return original
-    if len(original_data) < max_size_mb * 1024 * 1024:
+    if len(original_data) < max_bytes:
         return image_url
     
-    # Open and resize
+    # Open image
     img = Image.open(BytesIO(original_data))
-    
-    # Resize to max 1280px on longest side (keeps quality while reducing size)
-    max_dim = 1280
-    if max(img.size) > max_dim:
-        ratio = max_dim / max(img.size)
-        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-        img = img.resize(new_size, Image.Resampling.LANCZOS)
     
     # Convert to RGB if needed (for JPEG)
     if img.mode in ('RGBA', 'P'):
         img = img.convert('RGB')
     
-    # Compress with decreasing quality until under size limit
-    for quality in [85, 70, 55, 40]:
-        buffer = BytesIO()
-        img.save(buffer, format='JPEG', quality=quality, optimize=True)
-        if buffer.tell() < max_size_mb * 1024 * 1024:
-            break
+    # Start with reasonable dimensions and compress
+    max_dims = [1280, 1024, 800, 640]
+    qualities = [85, 75, 65, 55, 45, 35]
     
+    for max_dim in max_dims:
+        # Resize if needed
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            resized = img.resize(new_size, Image.Resampling.LANCZOS)
+        else:
+            resized = img
+        
+        # Try different quality levels
+        for quality in qualities:
+            buffer = BytesIO()
+            resized.save(buffer, format='JPEG', quality=quality, optimize=True)
+            if buffer.tell() < max_bytes:
+                buffer.seek(0)
+                compressed_data = buffer.read()
+                # Re-upload via fal.ai
+                return upload_image(compressed_data, "compressed.jpg")
+    
+    # Last resort: smallest size, lowest quality
+    ratio = 480 / max(img.size)
+    tiny = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.Resampling.LANCZOS)
+    buffer = BytesIO()
+    tiny.save(buffer, format='JPEG', quality=30, optimize=True)
     buffer.seek(0)
-    compressed_data = buffer.read()
-    
-    # Re-upload via fal.ai
-    return upload_image(compressed_data, "compressed.jpg")
+    return upload_image(buffer.read(), "compressed.jpg")
 
 
 def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") -> str:
