@@ -215,9 +215,9 @@ def transform_image_fal(image_url: str, effect: str, text_content: str = None) -
         "reno": "This same building completely stripped down to bare construction studs and exposed framing, active demolition renovation site, no furniture just raw structure.",
         "staging_inside": "Make this room bare and remove all furniture. Empty room with no furniture or decor.",
         "staging_outside": "Make this outside blank, no grass plants or trees, keep home exact same. Flat dirt texture, no landscaping.",
-        "3d_price": "Add large 3D metallic floating text overlay showing: {text}",
-        "3d_city": "Add large 3D metallic floating text overlay showing: {text}",
-        "3d_beds": "Add large 3D metallic floating text overlay showing: {text}",
+        "3d_price": "Add smaller 3D metallic text floating in the middle of the scene casting shadow showing: {text}",
+        "3d_city": "Add smaller 3D metallic text floating in the middle of the scene casting shadow showing: {text}",
+        "3d_beds": "Add smaller 3D metallic text floating in the middle of the scene casting shadow showing: {text}",
     }
     
     prompt = prompts.get(effect)
@@ -289,8 +289,8 @@ def generate_video_veo(image_url: str, prompt: str, duration: str = "4s", end_im
         result = fal_client.subscribe(
             "fal-ai/veo3.1/fast/first-last-frame-to-video",
             arguments={
-                "first_frame_image_url": image_url,
-                "last_frame_image_url": end_image_url,
+                "first_frame_url": image_url,
+                "last_frame_url": end_image_url,
                 "prompt": prompt,
                 "duration": duration,
                 "aspect_ratio": "9:16",
@@ -334,9 +334,9 @@ EFFECT_PROMPTS = {
     "staging_inside": "Furniture and decorations appear from the ground, luxury staging reveal. Slow, smooth camera move.",
     "staging_outside": "Landscaping, grass, plants, trees and outdoor furniture appear from the ground, curb appeal reveal. Slow, smooth camera move.",
     "reno": "Construction time lapse, finished room transforms revealing bare construction studs and exposed framing underneath. Slow, smooth camera move.",
-    "3d_price": "Slow, smooth camera move, cinematic real estate video",
-    "3d_city": "Slow, smooth camera move, cinematic real estate video",
-    "3d_beds": "Slow, smooth camera move, cinematic real estate video",
+    "3d_price": "One continuous shot camera fly in smooth forwards to through the opening in the 3D text. The massive 3D text is in the middle of the static environment.",
+    "3d_city": "One continuous shot camera fly in smooth forwards to through the opening in the 3D text. The massive 3D text is in the middle of the static environment.",
+    "3d_beds": "One continuous shot camera fly in smooth forwards to through the opening in the 3D text. The massive 3D text is in the middle of the static environment.",
 }
 
 # Which video model to use for each effect
