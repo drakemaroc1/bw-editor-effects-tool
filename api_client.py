@@ -408,17 +408,17 @@ def load_kie_api_key() -> str:
 def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
     """
     Download, compress, and re-upload image to meet KIE API size limits.
-    KIE requires images under 700KB.
+    KIE requires images under 700KB AND a real HTTP URL (not data URLs).
     
-    Returns new URL of compressed image.
+    Returns new HTTP URL of compressed image.
     """
     from PIL import Image
     from io import BytesIO
+    import tempfile
     
     # Handle both data URLs and http URLs
     if image_url.startswith('data:'):
         # Base64 data URL - decode it
-        # Format: data:image/jpeg;base64,/9j/4AAQ...
         header, encoded = image_url.split(',', 1)
         original_data = base64.b64decode(encoded)
     else:
@@ -429,10 +429,6 @@ def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
     
     max_bytes = max_size_kb * 1024
     
-    # If already small enough, return original
-    if len(original_data) < max_bytes:
-        return image_url
-    
     # Open image
     img = Image.open(BytesIO(original_data))
     
@@ -440,10 +436,11 @@ def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
     if img.mode in ('RGBA', 'P'):
         img = img.convert('RGB')
     
-    # Start with reasonable dimensions and compress
-    max_dims = [1280, 1024, 800, 640]
-    qualities = [85, 75, 65, 55, 45, 35]
+    # Always compress and upload to get HTTP URL (KIE doesn't accept data URLs)
+    max_dims = [1280, 1024, 800, 640, 480]
+    qualities = [85, 75, 65, 55, 45, 35, 25]
     
+    compressed_data = None
     for max_dim in max_dims:
         # Resize if needed
         if max(img.size) > max_dim:
@@ -460,16 +457,31 @@ def compress_image_for_kie(image_url: str, max_size_kb: int = 700) -> str:
             if buffer.tell() < max_bytes:
                 buffer.seek(0)
                 compressed_data = buffer.read()
-                # Re-upload via fal.ai
-                return upload_image(compressed_data, "compressed.jpg")
+                break
+        if compressed_data:
+            break
     
-    # Last resort: smallest size, lowest quality
-    ratio = 480 / max(img.size)
-    tiny = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.Resampling.LANCZOS)
-    buffer = BytesIO()
-    tiny.save(buffer, format='JPEG', quality=30, optimize=True)
-    buffer.seek(0)
-    return upload_image(buffer.read(), "compressed.jpg")
+    # Fallback if nothing worked
+    if not compressed_data:
+        ratio = 400 / max(img.size)
+        tiny = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        tiny.save(buffer, format='JPEG', quality=20, optimize=True)
+        buffer.seek(0)
+        compressed_data = buffer.read()
+    
+    # Upload to fal.ai to get a real HTTP URL (not data URL)
+    ensure_fal_key()
+    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f:
+        f.write(compressed_data)
+        temp_path = f.name
+    
+    try:
+        http_url = fal_client.upload_file(temp_path)
+    finally:
+        os.unlink(temp_path)
+    
+    return http_url
 
 
 def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") -> str:
