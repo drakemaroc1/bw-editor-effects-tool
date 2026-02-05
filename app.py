@@ -727,11 +727,11 @@ with tab_shotgen:
                                     else:
                                         c1, c2, c3 = st.columns(3)
                                         with c1:
-                                            if st.button("✏️", key=f"sg_edit_{idx}", use_container_width=True):
+                                            if st.button("Edit", key=f"sg_edit_{idx}", use_container_width=True):
                                                 st.session_state.sg_edit_mode[idx] = "prompt"
                                                 st.rerun()
                                         with c2:
-                                            if st.button("🔄", key=f"sg_redo_{idx}", use_container_width=True):
+                                            if st.button("Redo", key=f"sg_redo_{idx}", use_container_width=True):
                                                 job = st.session_state.sg_jobs.get(idx)
                                                 if job:
                                                     with st.spinner(f"Regenerating shot {idx+1}..."):
@@ -757,7 +757,7 @@ with tab_shotgen:
                                                         st.rerun()
                                         with c3:
                                             st.download_button(
-                                                "⬇️",
+                                                "DL",
                                                 data=requests.get(result["video_url"]).content,
                                                 file_name=f"shot_{idx+1}.mp4",
                                                 mime="video/mp4",
