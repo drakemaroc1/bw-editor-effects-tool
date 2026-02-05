@@ -215,9 +215,9 @@ def transform_image_fal(image_url: str, effect: str, text_content: str = None) -
         "reno": "This same building completely stripped down to bare construction studs and exposed framing, active demolition renovation site, no furniture just raw structure.",
         "staging_inside": "Make this room bare and remove all furniture. Empty room with no furniture or decor.",
         "staging_outside": "Make this outside blank, no grass plants or trees, keep home exact same. Flat dirt texture, no landscaping.",
-        "3d_price": "Add smaller 3D metallic text floating in the middle of the scene casting shadow showing: {text}",
-        "3d_city": "Add smaller 3D metallic text floating in the middle of the scene casting shadow showing: {text}",
-        "3d_beds": "Add smaller 3D metallic text floating in the middle of the scene casting shadow showing: {text}",
+        "3d_price": "Add large 3D serif text floating in the center of the scene with shadow: {text}",
+        "3d_city": "Add large 3D serif text floating in the center of the scene with shadow: {text}",
+        "3d_beds": "Add large 3D serif text floating in the center of the scene with shadow: {text}",
     }
     
     prompt = prompts.get(effect)
