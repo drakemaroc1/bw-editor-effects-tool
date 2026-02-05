@@ -361,3 +361,35 @@ NEEDS_OUTPAINT = ["veo_cam", "float", "day_to_night", "staging_inside", "staging
 
 # 3D text effects - get outpaint + transform (Nano Banana adds text), then VEO does camera movement
 TEXT_EFFECTS = ["3d_price", "3d_city", "3d_beds"]
+
+
+def generate_video_kling(image_url: str, prompt: str, duration: str = "5") -> str:
+    """
+    Generate video using Kling 2.1 Standard on fal.ai.
+    Simple I2V for Shot Generator - no transforms, just animate the image.
+
+    Args:
+        image_url: Source image URL or base64 data URL
+        prompt: Motion/camera prompt
+        duration: "5" or "10" seconds
+
+    Returns:
+        Video URL
+    """
+    ensure_fal_key()
+
+    # Kling accepts "5" or "10" for duration
+    dur = duration.replace("s", "") if isinstance(duration, str) else str(duration)
+    if dur not in ["5", "10"]:
+        dur = "5"
+
+    result = fal_client.subscribe(
+        "fal-ai/kling-video/v2.1/standard/image-to-video",
+        arguments={
+            "image_url": image_url,
+            "prompt": prompt,
+            "duration": dur,
+            "aspect_ratio": "9:16"
+        }
+    )
+    return result["video"]["url"]
