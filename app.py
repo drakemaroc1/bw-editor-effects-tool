@@ -122,6 +122,9 @@ if uploaded_files:
             elif effect_key == "3d_beds":
                 text_content = text_beds
             
+            # Build video prompt - 3D text is already baked into image by Nano Banana
+            video_prompt = EFFECT_PROMPTS.get(effect_key, EFFECT_PROMPTS["veo_cam"])
+            
             jobs.append({
                 "idx": i,
                 "effect_name": effect_name,
@@ -133,7 +136,7 @@ if uploaded_files:
                 "needs_transform": effect_key in TRANSFORM_EFFECTS,
                 "is_text_effect": effect_key in TEXT_EFFECTS,
                 "video_model": EFFECT_VIDEO_MODEL.get(effect_key, "veo"),
-                "prompt": EFFECT_PROMPTS.get(effect_key, EFFECT_PROMPTS["veo_cam"])
+                "prompt": video_prompt
             })
         
         total_steps = num_files * 3  # upload + outpaint/skip + video
@@ -154,9 +157,8 @@ if uploaded_files:
                 completed_steps += 1
                 progress.progress(completed_steps / total_steps)
         
-        # === PHASE 1b: Parallel outpaints (only for effects that need it) ===
+        # === PHASE 1b: Parallel outpaints (for effects that need 9:16 expansion) ===
         outpaint_jobs = [j for j in jobs if j["needs_outpaint"]]
-        text_jobs = [j for j in jobs if j["is_text_effect"]]
         
         if outpaint_jobs:
             status.text(f"[Phase 1b] Expanding {len(outpaint_jobs)} images to 9:16...")
@@ -173,11 +175,12 @@ if uploaded_files:
                     completed_steps += 1
                     progress.progress(completed_steps / total_steps)
         
-        # Text effects skip outpaint - use original image
-        for job in text_jobs:
-            job["vertical_url"] = job["image_url"]
-            completed_steps += 1
-            progress.progress(completed_steps / total_steps)
+        # For any jobs that didn't need outpaint, use original image
+        for job in jobs:
+            if not job["needs_outpaint"]:
+                job["vertical_url"] = job["image_url"]
+                completed_steps += 1
+                progress.progress(completed_steps / total_steps)
         
         # === PHASE 1c: Parallel transforms (only Float, Reno) ===
         transform_jobs = [j for j in jobs if j["needs_transform"]]
@@ -186,7 +189,7 @@ if uploaded_files:
             status.text(f"[Phase 1c] Transforming {len(transform_jobs)} images...")
             
             def transform_job(job):
-                transformed = transform_image(job["vertical_url"], job["effect_key"], job.get("text_content"))
+                transformed = transform_image(job["vertical_url"], job["effect_key"], job.get("text_content"), use_fal=True)
                 return {"idx": job["idx"], "transformed": transformed}
             
             with ThreadPoolExecutor(max_workers=4) as executor:
@@ -198,15 +201,23 @@ if uploaded_files:
         # Set start/end frames for all jobs
         for job in jobs:
             if job["is_text_effect"]:
-                # 3D text: original image only, VEO adds text in video
-                job["start_frame"] = job["image_url"]
-                job["end_frame"] = job["image_url"]
-            elif job["needs_transform"]:
-                # Float/Reno: vertical start, transformed end
-                job["start_frame"] = job["vertical_url"]
-                # end_frame already set by transform
+                # 3D text: use transformed image (with 3D text added by Nano Banana)
+                job["start_frame"] = job.get("end_frame", job["vertical_url"])  # transformed with 3D text
+                job["end_frame"] = job.get("end_frame", job["vertical_url"])    # same image
+            elif job["effect_key"] == "staging_inside":
+                # Staging Inside: empty room (transformed) → furnished (original)
+                job["start_frame"] = job.get("end_frame", job["vertical_url"])  # transformed (empty)
+                job["end_frame"] = job["vertical_url"]  # original (furnished)
+            elif job["effect_key"] == "staging_outside":
+                # Staging Outside: dirt (transformed) → landscaped (original) - landscaping APPEARS
+                job["start_frame"] = job.get("end_frame", job["vertical_url"])  # transformed (dirt)
+                job["end_frame"] = job["vertical_url"]  # original (landscaped)
+            elif job["effect_key"] == "reno":
+                # Reno: furnished (original) → construction studs (transformed)
+                job["start_frame"] = job["vertical_url"]  # original (furnished)
+                # end_frame already set by transform (studs)
             else:
-                # VEO Cam, Day→Night, Staging: vertical frame only
+                # VEO effects (float, day_to_night, veo_cam): vertical frame only
                 job["start_frame"] = job["vertical_url"]
                 job["end_frame"] = job["vertical_url"]
         
@@ -292,15 +303,15 @@ else:
         st.markdown("""
         **VEO Cam** — Camera motion only (outpaint → VEO)
         
-        **Float** — Furniture floats up (outpaint → transform → Seedance)
+        **Float** — Furniture floats up (outpaint → VEO)
         
         **Day to Night** — Day→night transition (outpaint → VEO)
         
-        **Staging Inside** — Interior staging (outpaint → VEO)
+        **Staging Inside** — Empty→furnished reveal (outpaint → transform → Seedance)
         
-        **Staging Outside** — Exterior staging (outpaint → VEO)
+        **Staging Outside** — Landscaping reveal (outpaint → transform → Seedance)
         
         **Reno** — Construction reveal (outpaint → transform → Seedance)
         
-        **3D Price/City/Beds** — Text overlay (original → VEO, no outpaint)
+        **3D Price/City/Beds** — 3D text overlay (outpaint → transform → VEO)
         """)

@@ -84,19 +84,17 @@ def upload_image(image_bytes: bytes, filename: str = "image.png") -> str:
 
 def outpaint_to_vertical(image_url: str) -> str:
     """
-    Convert image to 9:16 vertical using Nano Banana Pro /edit.
-    Uses native aspect_ratio parameter for seamless expansion (no visible seams).
-    Output: 2K resolution at 9:16 aspect ratio.
-    
-    This replaces the old outpaint endpoint which created visible seams.
+    Convert image to 9:16 vertical using Nano Banana Pro native aspect ratio.
+    NO expansion prompt - just reformat to 9:16. The model handles it naturally.
+    Output: 4K resolution at 9:16 aspect ratio.
     """
     result = fal_client.subscribe(
         "fal-ai/nano-banana-pro/edit",
         arguments={
             "image_urls": [image_url],
-            "prompt": "Expand this real estate photo to a vertical 9:16 format. Extend the scene naturally above and below while preserving the original content in the center. Keep the same lighting, style, and perspective. Photorealistic, professional real estate photography.",
+            "prompt": "This is a professional real estate photo. Reformat to vertical 9:16 aspect ratio.",
             "aspect_ratio": "9:16",
-            "resolution": "2K",  # Higher quality
+            "resolution": "4K",
             "output_format": "png"
         }
     )
@@ -191,39 +189,46 @@ def transform_image_gemini(image_url: str, effect: str, text_content: str = None
 
 def transform_image_fal(image_url: str, effect: str, text_content: str = None) -> str:
     """
-    Alternative: Transform image using fal.ai Nano Banana Pro /edit.
-    Higher quality than Gemini 2.5 Flash (uses Gemini 3 Pro Image).
-    Cost: $0.15/image vs ~$0.039 for Gemini 2.5 Flash.
+    Transform image using fal.ai Nano Banana Pro /edit.
+    Creates start frames for Seedance reveal effects.
     """
     prompts = {
-        "float": "Make all the furniture and objects float and levitate high in the air, suspended magically above the floor. Keep the room exactly the same but everything should be floating in a dreamlike, gravity-defying way.",
-        "reno": "Transform this room into an active renovation/construction site. Strip it down to bare studs and exposed framing. Remove all furniture and finishes, showing only the raw construction structure.",
+        "reno": "This same building completely stripped down to bare construction studs and exposed framing, active demolition renovation site, no furniture just raw structure.",
+        "staging_inside": "Make this room bare and remove all furniture. Empty room with no furniture or decor.",
+        "staging_outside": "Make this outside blank, no grass plants or trees, keep home exact same. Flat dirt texture, no landscaping.",
+        "3d_price": "Add large 3D metallic floating text overlay showing: {text}",
+        "3d_city": "Add large 3D metallic floating text overlay showing: {text}",
+        "3d_beds": "Add large 3D metallic floating text overlay showing: {text}",
     }
     
     prompt = prompts.get(effect)
     if not prompt:
         return image_url
     
+    # Replace {text} placeholder with actual text content for 3D text effects
+    if text_content and "{text}" in prompt:
+        prompt = prompt.replace("{text}", text_content)
+    
     result = fal_client.subscribe(
         "fal-ai/nano-banana-pro/edit",
         arguments={
             "image_urls": [image_url],
             "prompt": prompt,
-            "aspect_ratio": "auto",  # Preserve input aspect ratio
-            "resolution": "2K",
+            "aspect_ratio": "9:16",  # Native 9:16 - no outpaint needed
+            "resolution": "4K",
             "output_format": "png"
         }
     )
     return result["images"][0]["url"]
 
 
-def transform_image(image_url: str, effect: str, text_content: str = None, use_fal: bool = False) -> str:
+def transform_image(image_url: str, effect: str, text_content: str = None, use_fal: bool = True) -> str:
     """
-    Transform already-vertical image.
+    Transform image using Nano Banana Pro (default) or Gemini 2.5 Flash.
     
     Options:
-    - use_fal=False (default): Gemini 2.5 Flash Image (faster, cheaper ~$0.039)
-    - use_fal=True: fal.ai Nano Banana Pro (Gemini 3 Pro, higher quality, $0.15)
+    - use_fal=True (default): fal.ai Nano Banana Pro 4K (Gemini 3 Pro, best quality)
+    - use_fal=False: Gemini 2.5 Flash Image (faster, cheaper ~$0.039)
     """
     if use_fal:
         return transform_image_fal(image_url, effect, text_content)
@@ -252,68 +257,86 @@ def generate_video_seedance(first_frame_url: str, last_frame_url: str, prompt: s
     return result["video"]["url"]
 
 
-def generate_video_veo(image_url: str, prompt: str, duration: str = "4s") -> str:
+def generate_video_veo(image_url: str, prompt: str, duration: str = "4s", end_image_url: str = None) -> str:
     """
-    Generate video from single frame using VEO 3.1.
-    Use for effects where video model applies the transformation.
+    Generate video using VEO 3.1 Fast.
+    - Single frame: uses image-to-video endpoint
+    - Start+end frames: uses first-last-frame-to-video endpoint
     """
-    result = fal_client.subscribe(
-        "fal-ai/veo3.1/image-to-video",
-        arguments={
-            "image_url": image_url,
-            "prompt": prompt,
-            "duration": duration,
-            "aspect_ratio": "9:16",
-            "generate_audio": False
-        }
-    )
+    if end_image_url and end_image_url != image_url:
+        # Use first/last frame endpoint for start→end transitions
+        result = fal_client.subscribe(
+            "fal-ai/veo3.1/fast/first-last-frame-to-video",
+            arguments={
+                "first_frame_image_url": image_url,
+                "last_frame_image_url": end_image_url,
+                "prompt": prompt,
+                "duration": duration,
+                "aspect_ratio": "9:16",
+                "generate_audio": False
+            }
+        )
+    else:
+        # Single frame endpoint
+        result = fal_client.subscribe(
+            "fal-ai/veo3.1/fast/image-to-video",
+            arguments={
+                "image_url": image_url,
+                "prompt": prompt,
+                "duration": duration,
+                "aspect_ratio": "9:16",
+                "generate_audio": False
+            }
+        )
     return result["video"]["url"]
 
 
-def generate_video(first_frame_url: str, last_frame_url: str, prompt: str, duration: str = "5", model: str = "seedance") -> str:
+def generate_video(first_frame_url: str, last_frame_url: str, prompt: str, duration: str = "5", model: str = "veo") -> str:
     """
     Generate video - routes to appropriate model.
-    model: "seedance" for start/end frame transitions, "veo" for single frame + motion
+    All effects use VEO 3.1 Fast. Supports start/end frames for transitions.
     """
     if model == "veo":
-        return generate_video_veo(first_frame_url, prompt, duration if 's' in duration else f"{duration}s")
+        dur = duration if 's' in duration else f"{duration}s"
+        # Pass end frame if different from start (for staging/reno transitions)
+        end_url = last_frame_url if last_frame_url != first_frame_url else None
+        return generate_video_veo(first_frame_url, prompt, dur, end_image_url=end_url)
     else:
         return generate_video_seedance(first_frame_url, last_frame_url, prompt, duration)
 
 
 # Video prompts for each effect
 EFFECT_PROMPTS = {
-    "veo_cam": "Cinematic fast camera fly forward with slight orbit, smooth camera arc, professional real estate video",
-    "float": "Smooth cinematic transition, furniture gently floating upward, dreamlike magical atmosphere, camera pushing forward",
-    "day_to_night": "Dramatic transition from day to night, interior lights warming up and glowing, cozy evening atmosphere, slow camera push forward",
-    "staging_inside": "Professional interior staging reveal, elegant furniture appearing, luxury design transformation, camera pushing in",
-    "staging_outside": "Beautiful landscaping transformation, manicured lawn and outdoor furniture appearing, curb appeal reveal, camera pushing in",
-    "reno": "Dramatic construction reveal, renovation transformation, camera orbiting around the space",
-    "3d_price": "Cinematic camera push forward with subtle movement, professional marketing video",
-    "3d_city": "Cinematic camera push forward with subtle movement, professional marketing video",
-    "3d_beds": "Cinematic camera push forward with subtle movement, professional marketing video",
+    "veo_cam": "Slow, smooth camera move forward, professional real estate video.",
+    "float": "Make all furniture float and levitate high in the air, suspended magically above the floor. Camera fly forward and orbit at end.",
+    "day_to_night": "Dramatic transition from bright daytime to cozy nighttime, sun setting, interior lights slowly turning on and glowing warm, evening atmosphere. Camera push in.",
+    "staging_inside": "Furniture and decorations appear from the ground, luxury staging reveal. Slow, smooth camera move.",
+    "staging_outside": "Landscaping, grass, plants, trees and outdoor furniture appear from the ground, curb appeal reveal. Slow, smooth camera move.",
+    "reno": "Construction time lapse, finished room transforms revealing bare construction studs and exposed framing underneath. Slow, smooth camera move.",
+    "3d_price": "Slow, smooth camera move, cinematic real estate video",
+    "3d_city": "Slow, smooth camera move, cinematic real estate video",
+    "3d_beds": "Slow, smooth camera move, cinematic real estate video",
 }
 
 # Which video model to use for each effect
 EFFECT_VIDEO_MODEL = {
     "veo_cam": "veo",
-    "float": "seedance",      # Seedance for start→end frame transition
-    "day_to_night": "veo",    # VEO does day→night in video
-    "staging_inside": "veo",  # VEO does staging in video
-    "staging_outside": "veo", # VEO does staging in video
-    "reno": "seedance",       # Seedance for start→end frame transition
-    "3d_price": "veo",        # VEO adds text effect in video
+    "float": "veo",
+    "day_to_night": "veo",
+    "staging_inside": "veo",
+    "staging_outside": "veo",
+    "reno": "veo",
+    "3d_price": "veo",
     "3d_city": "veo",
     "3d_beds": "veo",
 }
 
-# Effects that need Gemini transform (creates different end frame for Seedance)
-TRANSFORM_EFFECTS = ["float", "reno"]
+# Effects that need image transform (creates end frame for Seedance OR adds text for 3D)
+TRANSFORM_EFFECTS = ["reno", "staging_inside", "staging_outside", "3d_price", "3d_city", "3d_beds"]
 
-# Effects that need outpaint (9:16 expansion)
-# VEO handles 9:16 natively - no outpaint needed for VEO effects
-# Only Seedance effects need pre-expanded frames
-NEEDS_OUTPAINT = ["float", "reno"]  # Seedance needs 9:16 input frames
+# Effects that need 9:16 conversion (using Nano Banana Pro native aspect ratio)
+# ALL effects except 3D text need 9:16 input frames for best quality
+NEEDS_OUTPAINT = ["veo_cam", "float", "day_to_night", "staging_inside", "staging_outside", "reno", "3d_price", "3d_city", "3d_beds"]
 
-# 3D text effects - NO outpaint, NO transform, just pass original to VEO
+# 3D text effects - get outpaint + transform (Nano Banana adds text), then VEO does camera movement
 TEXT_EFFECTS = ["3d_price", "3d_city", "3d_beds"]
