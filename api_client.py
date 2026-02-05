@@ -554,23 +554,29 @@ def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") 
     time.sleep(10)
     
     for attempt in range(max_attempts):
-        print(f"[KIE] Polling attempt {attempt + 1}...")
+        print(f"[KIE] Polling attempt {attempt + 1}...", flush=True)
         
         poll_resp = requests.get(detail_url, headers=headers)
         
         # Handle 404 gracefully (task might not be registered yet)
         if poll_resp.status_code == 404:
-            print(f"[KIE] Got 404 - task not ready yet, waiting...")
+            print(f"[KIE] Got 404 - task not ready yet, waiting...", flush=True)
             time.sleep(5)
             continue
         
         poll_resp.raise_for_status()
         poll_data = poll_resp.json()
         
-        if poll_data.get("code") != 200:
-            continue  # Might be transient, keep polling
+        code = poll_data.get("code")
+        print(f"[KIE] Response code: {code}", flush=True)
         
-        success_flag = poll_data["data"].get("successFlag", 0)
+        if code != 200:
+            print(f"[KIE] Unexpected code, continuing...", flush=True)
+            time.sleep(5)
+            continue
+        
+        success_flag = poll_data.get("data", {}).get("successFlag", 0)
+        print(f"[KIE] successFlag: {success_flag}", flush=True)
         
         if success_flag == 1:  # Success
             response_data = poll_data["data"].get("response", {})
@@ -586,6 +592,8 @@ def generate_video_kie(image_url: str, prompt: str, aspect_ratio: str = "9:16") 
             raise Exception("KIE: Task failed before completion")
         elif success_flag == 3:  # Generation failed
             raise Exception("KIE: Video generation failed upstream")
-        # successFlag == 0 means still generating, continue polling
+        
+        # successFlag == 0 means still generating, wait and poll again
+        time.sleep(5)
     
     raise Exception("KIE: Timeout waiting for video generation")
